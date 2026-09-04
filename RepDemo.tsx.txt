@@ -1,0 +1,197 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { initialState, reduce } from '@/lib/repMachine';
+import { DEFAULT_CONFIG, Effect, RepState, Vec3 } from '@/lib/types';
+
+/**
+ * The hero runs the app's actual rep-counting engine — the same
+ * repMachine.ts that ships in the APK, unmodified.
+ *
+ * A browser has no proximity sensor, so the press pad stands in for your chest
+ * covering it. The accelerometer stream is synthesised, and that is exactly
+ * what makes the demo worth having: the toggle switches between "phone flat on
+ * the floor" and "phone in your hand", and you can watch the same press get
+ * counted or rejected. That is the one thing about this app worth proving
+ * before someone downloads it.
+ */
+
+const TARGET = 8; // shorter than the real default; this is a demo, not a workout
+
+const CONFIG = { ...DEFAULT_CONFIG, targetReps: TARGET };
+
+type Placement = 'floor' | 'hand';
+
+/** Phone flat on the floor: gravity steady, sensor noise only. */
+function floorSample(): Vec3 {
+  const n = () => (Math.random() - 0.5) * 0.05;
+  return { x: n(), y: n(), z: 9.81 + n() };
+}
+
+/** Phone in a hand: it tilts as it swings, and a hand never goes still. */
+function handSample(t: number): Vec3 {
+  const tremor = () => (Math.random() - 0.5) * 0.24;
+  const phase = (t / 1600) * 2 * Math.PI;
+  const tilt = Math.sin(phase) * 0.7;
+  const swing = Math.sin(phase * 2) * 2.0;
+  return {
+    x: Math.sin(tilt) * 9.81 + swing + tremor(),
+    y: Math.sin(tilt * 0.6) * 4 + tremor(),
+    z: Math.cos(tilt) * 9.81 + swing * 0.5 + tremor(),
+  };
+}
+
+const REJECTION_COPY: Record<string, string> = {
+  flick: 'Too quick — that was a flick past the sensor, not a rep',
+  too_fast: 'Too soon after the last one',
+  stalled: 'Held down too long, reset',
+  device_moved: 'The phone moved. It has to stay flat on the floor.',
+  touching: 'Not while the screen is being touched',
+};
+
+export default function RepDemo() {
+  const machine = useRef<RepState>(initialState(0));
+  const placement = useRef<Placement>('floor');
+
+  const [mode, setMode] = useState<Placement>('floor');
+  const [reps, setReps] = useState(0);
+  const [near, setNear] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [flash, setFlash] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const push = useCallback((event: Parameters<typeof reduce>[1]) => {
+    const { state, effects } = reduce(machine.current, event, CONFIG);
+    machine.current = state;
+
+    for (const e of effects as Effect[]) {
+      if (e.type === 'REP') {
+        setReps(e.index);
+        setMessage(null);
+        setFlash(true);
+        setTimeout(() => setFlash(false), 200);
+      }
+      if (e.type === 'REJECT') setMessage(REJECTION_COPY[e.reason] ?? null);
+      if (e.type === 'COMPLETE') setDone(true);
+    }
+  }, []);
+
+  // 50Hz accelerometer stream, same rate the native bridge delivers.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const t = performance.now();
+      push({
+        type: 'ACCEL',
+        v: placement.current === 'floor' ? floorSample() : handSample(t),
+        t,
+      });
+    }, 20);
+    return () => clearInterval(id);
+  }, [push]);
+
+  const setNearState = (n: boolean) => {
+    setNear(n);
+    push({ type: 'PROXIMITY', near: n, raw: n ? 0 : 5, t: performance.now() });
+  };
+
+  const reset = () => {
+    machine.current = initialState(0);
+    setReps(0);
+    setDone(false);
+    setMessage(null);
+  };
+
+  const switchTo = (p: Placement) => {
+    placement.current = p;
+    setMode(p);
+    reset();
+  };
+
+  return (
+    <div className="w-full max-w-sm">
+      <div
+        className={`relative overflow-hidden rounded-3xl border border-line bg-void px-6 pb-6 pt-10 transition-colors ${
+          flash ? 'bg-confirm/10' : ''
+        }`}
+      >
+        <div className="flex items-baseline justify-center gap-2">
+          <span className="text-[7rem] font-extrabold leading-none tracking-tighter tabular-nums text-text">
+            {reps}
+          </span>
+          <span className="text-3xl font-light tabular-nums text-faint">/ {TARGET}</span>
+        </div>
+
+        <div className="mt-6 flex flex-wrap justify-center gap-1.5">
+          {Array.from({ length: TARGET }).map((_, i) => (
+            <span
+              key={i}
+              className={`h-1 w-3 rounded-full transition-colors ${
+                i < reps ? 'bg-confirm' : 'bg-line'
+              }`}
+            />
+          ))}
+        </div>
+
+        <div className="mt-6 flex min-h-[1.5rem] items-center justify-center gap-2">
+          <span
+            className={`h-2 w-2 rounded-full transition-colors ${
+              near ? 'bg-signal' : 'bg-faint'
+            }`}
+          />
+          <span className={`text-sm ${near ? 'text-signal' : 'text-faint'}`}>
+            {near ? 'Chest detected' : 'Waiting'}
+          </span>
+        </div>
+
+        <button
+          type="button"
+          onPointerDown={e => {
+            e.preventDefault();
+            setNearState(true);
+          }}
+          onPointerUp={() => setNearState(false)}
+          onPointerLeave={() => near && setNearState(false)}
+          disabled={done}
+          className="mt-6 h-16 w-full touch-none select-none rounded-xl border border-line text-lg font-semibold text-text transition-colors active:border-signal active:bg-signal/10 disabled:opacity-40"
+        >
+          {done ? 'Alarm off' : 'Press and hold'}
+        </button>
+
+        <p className="mt-3 min-h-[2.5rem] text-center text-sm leading-snug text-signal">
+          {done ? null : message}
+        </p>
+
+        {done && (
+          <button
+            onClick={reset}
+            className="mt-1 w-full text-sm text-muted underline underline-offset-4"
+          >
+            Run it again
+          </button>
+        )}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        {(['floor', 'hand'] as const).map(p => (
+          <button
+            key={p}
+            onClick={() => switchTo(p)}
+            className={`rounded-xl border px-3 py-3 text-sm transition-colors ${
+              mode === p
+                ? 'border-text bg-surface text-text'
+                : 'border-line text-muted hover:text-text'
+            }`}
+          >
+            {p === 'floor' ? 'Phone on the floor' : 'Phone in your hand'}
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-3 text-sm leading-relaxed text-muted">
+        {mode === 'floor'
+          ? 'Hold for at least a quarter second, and leave at least 0.9s between reps. Tap too fast and it will tell you why it refused.'
+          : 'Now the accelerometer says the phone is being held. Same presses, same timing — every rep gets thrown out.'}
+      </p>
+    </div>
+  );
+}

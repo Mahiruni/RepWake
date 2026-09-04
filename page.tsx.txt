@@ -1,0 +1,204 @@
+import RepDemo from '@/components/RepDemo';
+
+const APK_URL =
+  process.env.NEXT_PUBLIC_APK_URL ??
+  'https://github.com/MahirG/repwake/releases/latest/download/repwake.apk';
+
+const ENFORCEABLE = [
+  ['Back button blocked', true, 'Fully'],
+  ['Volume buttons stay silent', true, 'Swallowed while the alarm has focus'],
+  ['Survives a swipe-away', true, 'Runs in its own task as a foreground service'],
+  ['Survives a reboot', true, 'Alarms are rescheduled at boot'],
+  ['Ignores silent mode and DND', true, 'Plays on the alarm stream'],
+  ['Opens over the lock screen', true, 'Full-screen intent'],
+  ['Home button blocked', false, 'Not possible. It relaunches after two seconds'],
+  ['Notification shade blocked', false, 'Not possible outside kiosk mode'],
+  ['Unlocks a PIN-locked phone', false, 'No app can. It shows over the lock screen'],
+  ['Survives a force-stop', false, 'No app can. Android cancels a stopped app’s alarms'],
+] as const;
+
+export default function Page() {
+  return (
+    <main className="mx-auto max-w-3xl px-5 pb-24">
+      {/* Hero: the thing itself, running. Not a screenshot of it. */}
+      <section className="flex flex-col items-center gap-8 pt-16 sm:pt-24">
+        <RepDemo />
+        <div className="max-w-prose text-center">
+          <h1 className="text-4xl font-bold tracking-tight text-text sm:text-5xl">
+            The alarm stops when you have done the push-ups.
+          </h1>
+          <p className="mt-4 text-lg leading-relaxed text-muted">
+            Not when you tap something. RepWake counts reps with your phone’s
+            proximity sensor while it lies on the floor beneath your chest, and
+            it will not turn off until you reach the number you set.
+          </p>
+        </div>
+
+        <a
+          href={APK_URL}
+          className="flex h-14 w-full max-w-sm items-center justify-center rounded-xl bg-confirm text-lg font-semibold text-void transition-opacity hover:opacity-90"
+        >
+          Download for Android
+        </a>
+        <p className="-mt-4 text-sm text-faint">
+          Android 10 and up. Free, offline, no account.
+        </p>
+      </section>
+
+      <section className="mt-24 border-t border-line pt-12">
+        <h2 className="text-2xl font-semibold text-text">
+          The hard part is telling a push-up from a hand
+        </h2>
+        <div className="mt-4 space-y-4 text-muted [&>p]:leading-relaxed">
+          <p>
+            Timing rules get you most of the way. A rep has to hold the sensor
+            for at least a quarter of a second, and reps have to be at least
+            0.9 seconds apart. That kills hand-waving and flicking.
+          </p>
+          <p>
+            What it does not kill is picking the phone up and moving it against
+            your chest at a believable pace. For that, only the accelerometer
+            can tell the difference — and the obvious approach fails.
+          </p>
+        </div>
+
+        {/* A real comparison, so it gets a comparison layout. */}
+        <div className="mt-8 overflow-hidden rounded-xl border border-line">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-surface text-faint">
+              <tr>
+                <th className="px-4 py-3 font-medium">Measured</th>
+                <th className="px-4 py-3 font-medium tabular-nums">Total shake</th>
+                <th className="px-4 py-3 font-medium tabular-nums">Tilt</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {[
+                ['Real rep, light landing', '1.5', '0.6°', true],
+                ['Real rep, heavy landing', '15.1', '6.5°', true],
+                ['Cheating, gentle swing', '7.5', '41.1°', false],
+                ['Cheating, hard swing', '17.7', '45.9°', false],
+              ].map(([label, jerk, tilt, real]) => (
+                <tr key={label as string} className={real ? '' : 'bg-escape/5'}>
+                  <td className="px-4 py-3 text-text">{label}</td>
+                  <td className="px-4 py-3 tabular-nums text-muted">{jerk}</td>
+                  <td className="px-4 py-3 tabular-nums text-text">{tilt}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-6 space-y-4 text-muted [&>p]:leading-relaxed">
+          <p>
+            Total shake overlaps completely. Someone heavy landing hard on a
+            wooden floor registers more movement than someone cheating gently,
+            so using it would have thrown out real push-ups from real people.
+            On an alarm you cannot dismiss, that traps them.
+          </p>
+          <p className="text-text">
+            Tilt separates cleanly, and it is not a coincidence. A phone lying
+            on the floor cannot change orientation no matter how hard you land
+            beside it. A phone swung at a chest has to rotate.
+          </p>
+          <p>
+            A second check covers the careful version — lifting the phone and
+            moving it straight up and down without rotating it. The app looks
+            for the quietest tenth of a second in each rep. A floor goes
+            genuinely still between reps. A hand never does.
+          </p>
+        </div>
+      </section>
+
+      <section className="mt-20 border-t border-line pt-12">
+        <h2 className="text-2xl font-semibold text-text">You can always get out</h2>
+        <div className="mt-4 space-y-4 text-muted [&>p]:leading-relaxed">
+          <p>
+            After a few minutes an{' '}
+            <span className="text-escape">I can’t do this</span> button appears.
+            It starts a sixty-second countdown that cannot be skipped, then the
+            alarm stops.
+          </p>
+          <p>
+            It cannot be switched off in settings, and the delay before it
+            appears is capped in code, not just in the interface. Someone can be
+            injured, ill, or dealing with an emergency in the next room, and no
+            sensor can tell them apart from someone who just does not feel like
+            it. Detection can also simply be wrong — if the app rejects several
+            reps in a row from someone clearly trying, it assumes the fault is
+            its own, says so, and opens the exit immediately.
+          </p>
+          <p>
+            Skipping is logged plainly in your history. No penalty, no streak to
+            break. Punishing it would only push people to force-stop the app,
+            which breaks every alarm they have set.
+          </p>
+        </div>
+      </section>
+
+      <section className="mt-20 border-t border-line pt-12">
+        <h2 className="text-2xl font-semibold text-text">What it can and cannot stop</h2>
+        <p className="mt-4 leading-relaxed text-muted">
+          Some of this is not possible on Android, by anyone. An app that claims
+          otherwise is wrong about it.
+        </p>
+        <ul className="mt-6 divide-y divide-line border-y border-line">
+          {ENFORCEABLE.map(([label, ok, note]) => (
+            <li key={label} className="flex items-start gap-3 py-3">
+              <span
+                className={`mt-0.5 text-lg leading-none ${
+                  ok ? 'text-confirm' : 'text-escape'
+                }`}
+                aria-hidden
+              >
+                {ok ? '✓' : '✕'}
+              </span>
+              <span className="flex-1">
+                <span className="text-text">{label}</span>
+                <span className="block text-sm text-faint">{note}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-6 leading-relaxed text-muted">
+          Anyone determined to beat this can force-stop the app or reboot the
+          phone. That is fine. It is built for the half-awake version of someone
+          who chose it, not for an adversary.
+        </p>
+      </section>
+
+      <section className="mt-20 border-t border-line pt-12">
+        <h2 className="text-2xl font-semibold text-text">Before it will wake you</h2>
+        <p className="mt-4 leading-relaxed text-muted">
+          Two things need doing once, and the app walks you through both. It
+          calibrates the proximity sensor for your phone and its case, because
+          every handset reads it differently. And on Xiaomi, Oppo, Vivo, Huawei
+          and Samsung phones you will need to allow autostart — those
+          manufacturers kill background alarms by default, and it is the single
+          most common reason an alarm app stays silent.
+        </p>
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <a
+            href={APK_URL}
+            className="flex h-14 flex-1 items-center justify-center rounded-xl bg-confirm text-lg font-semibold text-void transition-opacity hover:opacity-90"
+          >
+            Download for Android
+          </a>
+          <a
+            href="https://github.com/MahirG/repwake"
+            className="flex h-14 flex-1 items-center justify-center rounded-xl border border-line text-lg font-semibold text-text transition-colors hover:border-text"
+          >
+            Read the source
+          </a>
+        </div>
+      </section>
+
+      <footer className="mt-20 border-t border-line pt-8 text-sm text-faint">
+        <p>
+          RepWake is free and runs entirely on your phone. It has no accounts,
+          no analytics and no network access.
+        </p>
+      </footer>
+    </main>
+  );
+}
