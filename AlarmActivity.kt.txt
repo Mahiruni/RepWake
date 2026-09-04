@@ -1,0 +1,127 @@
+package com.repwake.alarm
+
+import android.app.KeyguardManager
+import android.content.Context
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.KeyEvent
+import android.view.View
+import android.view.WindowManager
+import com.facebook.react.ReactActivity
+import com.facebook.react.ReactActivityDelegate
+import com.facebook.react.defaults.DefaultReactActivityDelegate
+
+/**
+ * The ringing screen. A separate RN root component ("RepWakeAlarm") registered
+ * in index.js, so it boots straight into the rep counter with no navigation.
+ *
+ * On what can and cannot be locked down -- see README, "Anti-cheat: what is
+ * actually enforceable":
+ *   - Back button: fully blocked.
+ *   - Volume keys: swallowed while this activity has focus.
+ *   - Home / recents: cannot be blocked. We detect the focus loss and relaunch.
+ *   - Status bar pull-down: cannot be blocked on modern Android without device
+ *     owner or kiosk mode. Immersive mode hides it; a determined user can still
+ *     drag it down. The relaunch-on-focus-loss is the real mitigation.
+ */
+class AlarmActivity : ReactActivity() {
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var dismissing = false
+    private var relaunch: Runnable? = null
+
+    override fun getMainComponentName(): String = "RepWakeAlarm"
+
+    override fun createReactActivityDelegate(): ReactActivityDelegate =
+        DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // Never restore a saved instance state: a stale RN root here means the
+        // rep counter could come back mid-count with the wrong tally.
+        super.onCreate(null)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                    WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // Dismisses only a non-secure keyguard. With a PIN or biometric set,
+        // Android will not let any app unlock the device -- we show over the
+        // lock screen instead, which is the correct and expected behaviour.
+        (getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager)
+            .requestDismissKeyguard(this, null)
+
+        hideSystemBars()
+    }
+
+    private fun hideSystemBars() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = (
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            )
+    }
+
+    /** Volume, camera and search keys must not silence or escape the alarm. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN,
+        KeyEvent.KEYCODE_VOLUME_MUTE,
+        KeyEvent.KEYCODE_CAMERA,
+        KeyEvent.KEYCODE_SEARCH -> true
+        else -> super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_VOLUME_UP,
+        KeyEvent.KEYCODE_VOLUME_DOWN,
+        KeyEvent.KEYCODE_VOLUME_MUTE -> true
+        else -> super.onKeyUp(keyCode, event)
+    }
+
+    @Deprecated("Intentional: back must not dismiss a ringing alarm")
+    override fun onBackPressed() { /* no-op */ }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            hideSystemBars()
+            relaunch?.let { handler.removeCallbacks(it) }
+            relaunch = null
+        } else if (!dismissing && AlarmService.isRinging) {
+            // Home pressed, or the notification shade pulled down. Come back.
+            val r = Runnable {
+                if (!dismissing && AlarmService.isRinging) {
+                    AlarmService.currentAlarmId?.let { id ->
+                        startActivity(intent.putExtra(AlarmScheduler.EXTRA_ALARM_ID, id))
+                    }
+                }
+            }
+            relaunch = r
+            handler.postDelayed(r, 2000)
+        }
+    }
+
+    /** Called from the JS bridge once the set is complete or the user escapes. */
+    fun markDismissing() {
+        dismissing = true
+        relaunch?.let { handler.removeCallbacks(it) }
+        finishAndRemoveTask()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+}

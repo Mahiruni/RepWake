@@ -1,0 +1,223 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Animated,
+  BackHandler,
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  Vibration,
+  View,
+} from 'react-native';
+import { Native } from '../native/RepWakeAlarm';
+import { useRepSession } from '../detection/useRepSession';
+import { DEFAULT_CONFIG, Effect, RepConfig } from '../detection/types';
+import { color, radius, space, TOUCH, type } from '../theme';
+import { useSettings, useHistory } from '../state/store';
+import { EscapeHatch } from '../components/EscapeHatch';
+
+interface Props {
+  alarmId: string;
+  label: string;
+  config: RepConfig;
+}
+
+const clock = () =>
+  new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+export default function AlarmRingingScreen({ alarmId, label, config }: Props) {
+  const settings = useSettings();
+  const addEntry = useHistory(s => s.add);
+
+  const startedAt = useRef(Date.now());
+  const [now, setNow] = useState(clock);
+  const [flash] = useState(() => new Animated.Value(0));
+  const [pop] = useState(() => new Animated.Value(1));
+  const [struggling, setStruggling] = useState(false);
+  const [lastReject, setLastReject] = useState<string | null>(null);
+
+  const cfg = useMemo<RepConfig>(() => ({ ...DEFAULT_CONFIG, ...config }), [config]);
+
+  const finish = useCallback(
+    (reps: number, skipped: boolean) => {
+      addEntry({
+        alarmId,
+        date: new Date().toISOString(),
+        wakeTime: new Date(startedAt.current).toISOString(),
+        repsCompleted: reps,
+        targetReps: cfg.targetReps,
+        durationMs: Date.now() - startedAt.current,
+        skipped,
+      });
+      Native.dismiss(reps, skipped);
+    },
+    [addEntry, alarmId, cfg.targetReps],
+  );
+
+  const handleEffect = useCallback(
+    (e: Effect) => {
+      switch (e.type) {
+        case 'REP':
+          if (settings.vibrate) Vibration.vibrate(35);
+          setLastReject(null);
+          Animated.sequence([
+            Animated.timing(flash, { toValue: 1, duration: 90, useNativeDriver: true }),
+            Animated.timing(flash, { toValue: 0, duration: 260, useNativeDriver: true }),
+          ]).start();
+          Animated.sequence([
+            Animated.spring(pop, { toValue: 1.08, speed: 60, bounciness: 14, useNativeDriver: true }),
+            Animated.spring(pop, { toValue: 1, speed: 40, bounciness: 8, useNativeDriver: true }),
+          ]).start();
+          break;
+
+        case 'REJECT':
+          // Only surfaced for reasons the user can act on. "too_fast" and
+          // "stalled" are self-explanatory from the counter not moving.
+          if (e.reason === 'touching') setLastReject('Take your hands off the screen');
+          if (e.reason === 'device_moved') setLastReject('Keep the phone flat on the floor');
+          break;
+
+        case 'SUSPECT_MISCALIBRATION':
+          // We have refused several reps in a row from someone who is probably
+          // doing them properly. Assume we are wrong, say so, and open the exit
+          // immediately rather than leaving them trapped by a bad threshold.
+          setStruggling(true);
+          break;
+
+        case 'COMPLETE':
+          if (settings.vibrate) Vibration.vibrate([0, 60, 80, 60]);
+          finish(cfg.targetReps, false);
+          break;
+      }
+    },
+    [cfg.targetReps, finish, flash, pop, settings.vibrate],
+  );
+
+  const { state, proximityLive, setTouching } = useRepSession(cfg, handleEffect);
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(clock()), 10_000);
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => {
+      clearInterval(t);
+      sub.remove();
+    };
+  }, []);
+
+  const remaining = Math.max(0, cfg.targetReps - state.reps);
+
+  return (
+    <View
+      style={styles.root}
+      onStartShouldSetResponder={() => {
+        setTouching(true);
+        return true;
+      }}
+      onResponderRelease={() => setTouching(false)}>
+      <StatusBar hidden barStyle="light-content" backgroundColor={color.void} />
+
+      <Animated.View
+        pointerEvents="none"
+        style={[styles.flash, { opacity: flash.interpolate({ inputRange: [0, 1], outputRange: [0, 0.16] }) }]}
+      />
+
+      <View style={styles.header}>
+        <Text style={styles.clock}>{now}</Text>
+        <Text style={styles.label} numberOfLines={1}>{label}</Text>
+      </View>
+
+      <View style={styles.counterBlock}>
+        <Animated.Text style={[styles.counter, { transform: [{ scale: pop }] }]}>
+          {state.reps}
+        </Animated.Text>
+        <Text style={styles.target}>/ {cfg.targetReps}</Text>
+      </View>
+
+      {/* One tick per rep: a real sequence, so a segmented readout is the
+          honest representation of it. Also legible at a glance without
+          reading a number. */}
+      <View style={styles.ticks}>
+        {Array.from({ length: cfg.targetReps }).map((_, i) => (
+          <View
+            key={i}
+            style={[styles.tick, i < state.reps && styles.tickDone]}
+          />
+        ))}
+      </View>
+
+      <Text style={styles.remaining}>
+        {remaining === 0 ? 'Done' : `${remaining} to go`}
+      </Text>
+
+      <View style={styles.status}>
+        <View style={[styles.dot, proximityLive && styles.dotLive]} />
+        <Text style={[styles.statusText, proximityLive && styles.statusTextLive]}>
+          {cfg.mode === 'accel'
+            ? 'Reading arm movement'
+            : proximityLive
+              ? 'Chest detected'
+              : 'Phone on the floor, screen up, under your chest'}
+        </Text>
+      </View>
+
+      {lastReject ? <Text style={styles.correction}>{lastReject}</Text> : null}
+
+      <View style={styles.footer}>
+        <EscapeHatch
+          delayMs={struggling ? 0 : settings.escapeHatchDelayMs}
+          countdownMs={60_000}
+          reason={struggling}
+          onEscape={() => finish(state.reps, true)}
+        />
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: color.void,
+    paddingHorizontal: space.lg,
+    paddingTop: space.xxl,
+    paddingBottom: space.lg,
+    alignItems: 'center',
+  },
+  flash: { ...StyleSheet.absoluteFillObject, backgroundColor: color.confirm },
+
+  header: { alignItems: 'center', gap: space.xs },
+  clock: { ...type.clock, color: color.textFaint },
+  label: { ...type.heading, color: color.textMuted, maxWidth: '90%' },
+
+  counterBlock: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: space.sm,
+  },
+  counter: { ...type.counter, color: color.text },
+  target: { ...type.counterTarget, color: color.textFaint, marginBottom: space.lg },
+
+  ticks: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 5,
+    marginBottom: space.md,
+  },
+  tick: { width: 10, height: 4, borderRadius: 2, backgroundColor: color.line },
+  tickDone: { backgroundColor: color.confirm },
+
+  remaining: { ...type.heading, color: color.textMuted, marginBottom: space.lg },
+
+  status: { flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: 24 },
+  dot: { width: 10, height: 10, borderRadius: radius.pill, backgroundColor: color.textFaint },
+  dotLive: { backgroundColor: color.signal },
+  statusText: { ...type.small, color: color.textFaint, flexShrink: 1 },
+  statusTextLive: { color: color.signal },
+
+  correction: { ...type.label, color: color.signal, marginTop: space.md, textAlign: 'center' },
+
+  footer: { width: '100%', marginTop: space.xl, minHeight: TOUCH },
+});

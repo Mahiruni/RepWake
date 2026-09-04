@@ -1,0 +1,124 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { color, radius, space, TOUCH, type } from '../theme';
+
+interface Props {
+  /** How long after the alarm starts before the button appears. 0 = now. */
+  delayMs: number;
+  /** Hold-off once tapped. Cannot be shortened or cancelled. */
+  countdownMs: number;
+  /** True when the app suspects its own detection is failing this user. */
+  reason?: boolean;
+  onEscape: () => void;
+}
+
+/**
+ * SAFETY-CRITICAL. Do not remove, do not gate behind a setting that can
+ * disable it, do not make the countdown skippable, and do not make the delay
+ * unbounded.
+ *
+ * The whole premise of this app is that the alarm cannot be dismissed. That is
+ * fine for a person who is merely unwilling. It is dangerous for a person who
+ * is injured, ill, having a panic attack, or dealing with an emergency in the
+ * next room -- and for a person whose phone simply is not detecting their reps.
+ * None of those people can be identified by a sensor, so the exit must always
+ * exist and must not require the app to be clever.
+ *
+ * The 60 seconds is the entire anti-abuse mechanism, and it is enough: it is
+ * long enough that skipping is never the easy option, and short enough that it
+ * is never the dangerous one. It is not a punishment, and the history log
+ * records a skip without penalty or streak loss.
+ *
+ * The delay is clamped here rather than trusted from settings, so that no
+ * configuration -- and no future caller -- can produce a build with no way out.
+ */
+const MAX_DELAY_MS = 10 * 60 * 1000; // 10 minutes, hard ceiling
+
+export function EscapeHatch({ delayMs, countdownMs, reason, onEscape }: Props) {
+  const delay = Math.min(Math.max(0, delayMs), MAX_DELAY_MS);
+
+  const [visible, setVisible] = useState(delay === 0);
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const deadline = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (visible) return;
+    const t = setTimeout(() => setVisible(true), delay);
+    return () => clearTimeout(t);
+  }, [delay, visible]);
+
+  useEffect(() => {
+    if (remaining === null) return;
+    const id = setInterval(() => {
+      const left = Math.max(0, (deadline.current ?? 0) - Date.now());
+      setRemaining(left);
+      if (left <= 0) {
+        clearInterval(id);
+        onEscape();
+      }
+    }, 250);
+    return () => clearInterval(id);
+  }, [remaining === null, onEscape]);
+
+  if (!visible) return null;
+
+  if (remaining !== null) {
+    const secs = Math.ceil(remaining / 1000);
+    return (
+      <View style={styles.countdown}>
+        <Text style={styles.countdownNum}>{secs}</Text>
+        <Text style={styles.countdownText}>
+          Alarm stops in {secs} second{secs === 1 ? '' : 's'}. Stay put.
+        </Text>
+      </View>
+    );
+  }
+
+  const start = () => {
+    deadline.current = Date.now() + countdownMs;
+    setRemaining(countdownMs);
+  };
+
+  return (
+    <View style={styles.wrap}>
+      {reason ? (
+        <Text style={styles.hint}>
+          Reps aren't registering. That's on the app, not you — recalibrate in
+          Settings later.
+        </Text>
+      ) : null}
+      <Pressable
+        onPress={start}
+        accessibilityRole="button"
+        accessibilityLabel="Stop the alarm without finishing"
+        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}>
+        <Text style={styles.buttonText}>I can't do this</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { width: '100%', gap: space.sm },
+  hint: { ...type.small, color: color.signal, textAlign: 'center' },
+  button: {
+    width: '100%',
+    height: TOUCH,
+    borderRadius: radius.button,
+    borderWidth: 1,
+    borderColor: color.escape,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonPressed: { backgroundColor: 'rgba(255,107,74,0.14)' },
+  buttonText: { ...type.heading, color: color.escape },
+
+  countdown: { width: '100%', alignItems: 'center', gap: space.xs },
+  countdownNum: {
+    fontSize: 56,
+    fontWeight: '700',
+    color: color.escape,
+    fontVariant: ['tabular-nums'],
+  },
+  countdownText: { ...type.body, color: color.textMuted, textAlign: 'center' },
+});
